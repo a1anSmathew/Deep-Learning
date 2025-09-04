@@ -1,8 +1,13 @@
 import pickle
 import numpy as np
 import torch
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets,transforms
+from torchvision.models import ResNet18_Weights
 from torchvision.transforms import ToTensor
 import torch
 import torch.nn as nn
@@ -29,6 +34,7 @@ opener = urllib.request.build_opener(proxy_handler)
 urllib.request.install_opener(opener)
 
 transform = transforms.Compose([
+    transforms.Resize(224),
     transforms.ToTensor(),
     transforms.Normalize(
         (0.4914, 0.4822, 0.4465),
@@ -60,7 +66,9 @@ test_dataloader = DataLoader(test_data, batch_size=batch_size)
 
 
 # Loading the model and removing the last layer
-model = models.resnet18(pretrained=True)
+model = models.resnet18(weights = ResNet18_Weights.DEFAULT)
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 # print(model.fc) # Return the last fc of the CNN model
 # print (model.fc.in_features)
 for layer in model.children():# model.children() returns an iterator over the immediate layers (modules) inside the model.
@@ -71,10 +79,55 @@ feature_extractor = nn.Sequential(*list(model.children())[:-1])  #[:-1]:- Normal
 # criterion = nn.CrossEntropyLoss()
 # optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-# Passing the training dataset to obtain the features
-model.eval()
-with torch.no_grad():
-    for X, y in test_dataloader:
-        X, y = X.to(device), y.to(device)
-        pred = feature_extractor(X)
-        print(len(X))
+# # Passing the training dataset to fine tune the weights
+# model.train()
+# for X, y in train_dataloader:
+#     X, y = X.to(device), y.to(device)  # Moves both the input images and labels to the selected device (cuda if GPU available, else cpu). Ensures computations happen on the same device as the model.
+#
+#     # Compute prediction error
+#     pred = model(X)
+#     loss = criterion(pred, y)
+#
+#     # Backpropagation
+#     loss.backward()  # Performs back propagation by calculating gradients for all the parameters which has requires_grad=True.
+#     optimizer.step()  # Updates the parameters using the gradients
+#     optimizer.zero_grad()  # By default, PyTorch accumulates gradients in .grad (instead of overwriting them). But in standard training, we want fresh gradients each batch, so we reset them to zero.
+
+
+# Passing the testing dataset to obtain the features
+def feature_extraction(dataloader,feature_extractor):
+    feature_extractor.eval()
+    with torch.no_grad():
+        feature_list = []
+        labels = []
+        for X, y in dataloader :
+            X, y = X.to(device), y.to(device)
+            pred = feature_extractor(X)          # shape: [1, 512, 1, 1]
+            features = pred.view(pred.size(0), -1).cpu().numpy() # flatten -> shape: [512]
+            # print(features.shape)                # torch.Size([512])
+            feature_list.append(features)
+            labels.extend(y.cpu().numpy())
+            # print(features[:10])                 # first 10 values for example
+        print(len(feature_list))
+        feature_list = np.array(feature_list)
+        labels = np.array(labels)
+        return feature_list, labels
+
+
+# Building an ML Model
+
+X_train,y_train = feature_extraction(train_dataloader,feature_extractor)
+X_test, y_test = feature_extraction(test_dataloader,feature_extractor)
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+
+model = SVC(kernel="rbf", C=1.0, decision_function_shape="ovr")
+model.fit(X_train, y_train)
+
+# Test accuracy
+y_pred = model.predict(X_test)
+acc = accuracy_score(y_test, y_pred)
+
+print("SVM Test Accuracy:", acc)
+
